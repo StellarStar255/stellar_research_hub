@@ -1,0 +1,8 @@
+PyQt6>=6.6.0,<7  # 界面；QtPdf / QtPdfWidgets 随 PyQt6 wheel 一起提供（论文阅读器）
+anthropic>=1.0.0  # 调用 Claude（对话、读 PDF、实验 agent）
+keyring>=24.0.0  # 可选：API Key 存入系统钥匙串（macOS Keychain / Windows 凭据管理器）；缺失时回退 QSettings
+certifi>=2024.2.2  # 下载 arXiv 论文时的 HTTPS CA 证书
+# 下面是「实验」里 Claude 写的代码常用的库，不是应用本身的依赖；
+# 也可以在设置里把实验解释器指向你自己的 conda 环境（装了 torch 等）
+numpy>=1.24.0
+matplotlib>=3.8.0

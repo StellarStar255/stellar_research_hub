@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>{{TITLE}}</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<style>
+body { font: 14px/1.75 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; color: #1d1d1f; max-width: 780px;
+       margin: 40px auto; padding: 0 24px; }
+h1 { font-size: 24px; line-height: 1.35; margin: 0 0 6px; }
+h2 { font-size: 18px; margin: 26px 0 8px; border-bottom: 1px solid #e3e3de; padding-bottom: 4px; }
+h3 { font-size: 15px; margin: 18px 0 6px; }
+.meta { color: #76767c; font-size: 12px; margin-bottom: 24px; }
+a { color: #3b5bdb; text-decoration: none; }
+table { border-collapse: collapse; font-size: 12.5px; margin: 10px 0; width: 100%; }
+td, th { border: 1px solid #d8d8d2; padding: 5px 8px; text-align: left; vertical-align: top; }
+th { background: #f3f3f0; }
+blockquote { margin: 8px 0; padding: 2px 12px; border-left: 3px solid #d8d8d2; color: #555; }
+code { background: #f3f3f0; padding: 1px 4px; border-radius: 4px; font-size: 12.5px; }
+pre { background: #f3f3f0; padding: 10px 12px; border-radius: 6px; overflow-x: auto; font-size: 12px; white-space: pre-wrap; }
+pre code { background: none; padding: 0; }
+img { max-width: 100%; }
+.katex-display { overflow-x: auto; }
+tr, img, pre, .katex-display { break-inside: avoid; }
+.bar { position: fixed; top: 12px; right: 16px; }
+.bar button { font: inherit; border: 1px solid #3b5bdb; background: #3b5bdb; color: #fff; border-radius: 8px; padding: 5px 14px; cursor: pointer; }
+@media print { .bar { display: none; } body { margin: 0 auto; } @page { margin: 16mm 14mm; } }
+</style>
+</head>
+<body>
+<div class="bar"><button onclick="print()">存为 PDF / 打印</button></div>
+<div id="doc"></div>
+<script>
+const MD = {{MARKDOWN_JSON}};
+const TITLE = document.title;
+function renderMd(text) {
+  const code = [], math = [];
+  let s = String(text || '').replace(/```[\s\S]*?(```|$)|`[^`\n]+`/g, m => `\u0000C${code.push(m) - 1}\u0000`);
+  const put = (tex, display) => `\u0000M${math.push({tex, display}) - 1}\u0000`;
+  s = s.replace(/\$\$([\s\S]+?)\$\$/g, (_, t) => put(t, true))
+       .replace(/\\\[([\s\S]+?)\\\]/g, (_, t) => put(t, true))
+       .replace(/\\\(([\s\S]+?)\\\)/g, (_, t) => put(t, false))
+       .replace(/(^|[^\\\w$])\$(?!\s)([^$\n]+?)(?<!\s)\$(?![\w$])/g, (_, pre, t) => pre + put(t, false));
+  s = s.replace(/\u0000C(\d+)\u0000/g, (_, i) => code[i]);
+  s = s.replace(/\[\[RUN\s+[^\]]+\]\]|\[\[CONFIRM\]\]/g, '');
+  let html = marked.parse(s, {gfm: true});
+  return html.replace(/\u0000M(\d+)\u0000/g, (_, i) => {
+    try { return katex.renderToString(math[i].tex, {displayMode: math[i].display, throwOnError: false}); } catch { return math[i].tex; }
+  });
+}
+const hasTitle = /^\s*# /.test(MD);
+document.getElementById('doc').innerHTML =
+  (hasTitle ? '' : `<h1>${TITLE.replace(/</g, '&lt;')}</h1>`) +
+  `<div class="meta">导出自论文研究台 · ${new Date().toLocaleDateString('zh-CN')}</div>` +
+  (MD.trim() ? renderMd(MD) : '<p>（还没有内容）</p>');
+document.querySelectorAll('a[href^="http"]').forEach(a => a.target = '_blank');
+// 图片加载完再弹打印框，免得 PDF 里缺图
+Promise.all([...document.images].map(img => img.complete ? 0 : new Promise(r => { img.onload = img.onerror = r; })))
+  .then(() => setTimeout(() => print(), 300));
+</script>
+</body>
+</html>

@@ -1,0 +1,3 @@
+#!/bin/bash
+# 主题研究 agent 调用的包装脚本（任意目录下都能跑）
+cd "$(dirname "$0")" && exec python3 rh.py "$@"

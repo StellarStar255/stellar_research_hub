@@ -1,0 +1,30 @@
+# Python
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# IDE / 编辑器
+.idea/
+.vscode/
+.claude/
+
+# 操作系统
+.DS_Store
+
+# 日志 / 临时文件
+**/*.log
+/tmp/
+
+# 敏感信息
+*.env
+**/*_credential*
+
+# 打包产物
+/build/
+/dist/
+.venv*/
+
+# 本机个人文件（粘贴的截图、终端工具配置）
+.images/
+.sterminal/
