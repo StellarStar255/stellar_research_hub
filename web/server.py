@@ -65,6 +65,14 @@ def index():
                         headers={"Cache-Control": "no-store"})
 
 
+@app.get("/static/{name}")
+def static_file(name: str):
+    path = os.path.join(os.path.dirname(__file__), "static", name)
+    if not name.endswith(".js") or "/" in name or not os.path.isfile(path):
+        raise HTTPException(404)
+    return FileResponse(path, media_type="text/javascript", headers={"Cache-Control": "no-store"})
+
+
 # ---------------- 论文 ----------------
 
 @app.get("/api/papers")

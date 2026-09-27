@@ -7,8 +7,8 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<!-- 复制公式时得到 LaTeX 源码（$d_k$），而不是拆成几行的碎字符 -->
-<script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/copy-tex.min.js"></script>
+<!-- 复制公式时转成好读的 Unicode（dₖ、√dₖ），复杂公式才保留 LaTeX -->
+<script src="/static/texcopy.js"></script>
 <style>
 :root {
   --bg: #f7f7f5; --panel: #ffffff; --side: #efefec; --ink: #1d1d1f; --muted: #76767c; --line: #e3e3de;
@@ -41,7 +41,10 @@ body.max-pdf aside, body.max-pdf main, body.max-pdf #divider,
 body.max-chat aside, body.max-chat #pdfPane, body.max-chat #divider { display: none !important; }
 body.max-pdf #pdfPane { flex: 1 1 auto !important; display: flex !important; }
 body.max-chat main { flex: 1 1 auto; }
-body.max-chat .thread, body.max-chat .box, body.max-chat .quick { max-width: 980px; }
+body.max-chat .thread, body.max-chat .box, body.max-chat .preview { max-width: 820px; margin: 0 auto 6px; padding: 6px 14px; border: 1px dashed var(--line); border-radius: 12px;
+           font-size: 14px; background: var(--panel); max-height: 160px; overflow-y: auto; }
+.preview::before { content: "公式预览"; display: block; font-size: 11px; color: var(--muted); }
+.quick { max-width: 980px; }
 .maxbtn { border: 1px solid var(--line) !important; background: var(--panel) !important; color: var(--ink) !important; }
 body.max-pdf #maxPdf, body.max-chat #maxChat { border-color: var(--accent) !important; color: var(--accent) !important; }
 .md a.paperlink { border-bottom: 1px dashed var(--accent); }
@@ -156,6 +159,9 @@ details.code pre { background: var(--code); padding: 10px 12px; border-radius: 8
 .meta-line { font-size: 12px; color: var(--muted); margin-top: 8px; }
 
 .composer { padding: 8px 20px 16px; }
+.preview { max-width: 820px; margin: 0 auto 6px; padding: 6px 14px; border: 1px dashed var(--line); border-radius: 12px;
+           font-size: 14px; background: var(--panel); max-height: 160px; overflow-y: auto; }
+.preview::before { content: "公式预览"; display: block; font-size: 11px; color: var(--muted); }
 .quick { max-width: 820px; margin: 0 auto 8px; display: flex; gap: 6px; flex-wrap: wrap; }
 .quick button { border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 999px;
                 padding: 2px 11px; font-size: 12.5px; }
@@ -225,6 +231,7 @@ details.code pre { background: var(--code); padding: 10px 12px; border-radius: 8
   <div id="scroll"><div class="thread" id="thread"></div></div>
   <div class="composer">
     <div class="quick" id="quick"></div>
+    <div class="preview md" id="preview" hidden></div>
     <div class="box">
       <textarea id="input" rows="1" placeholder="问点什么……（Enter 发送，Shift+Enter 换行）"></textarea>
       <button class="send" id="send" disabled>发送</button>
@@ -654,7 +661,13 @@ $('#send').onclick = async () => {
   if (running) { await api(`${base()}/chats/${current}/stop`, {method: 'POST'}); return; }
   send();
 };
-function autosize() { const t = $('#input'); t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; updateComposer(); }
+function autosize() {
+  const t = $('#input'); t.style.height = 'auto'; t.style.height = t.scrollHeight + 'px'; updateComposer();
+  // 输入里有 $...$ 公式时，在上方实时显示渲染效果
+  const hasMath = /\$[^$\n]+\$|\\\(|\\\[/.test(t.value);
+  $('#preview').hidden = !hasMath;
+  if (hasMath) $('#preview').innerHTML = renderMd(t.value);
+}
 $('#input').oninput = autosize;
 $('#input').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } };
 
