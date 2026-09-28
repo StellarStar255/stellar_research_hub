@@ -21,7 +21,29 @@ from core.library import strip_arxiv_version
 API = ("https://api.semanticscholar.org/graph/v1/paper/batch"
        "?fields=title,year,venue,citationCount,influentialCitationCount")
 CACHE_TTL = 7 * 24 * 3600
-RETRY_WAITS = (2, 4, 6)
+RETRY_WAITS = (3,)
+# 被限流后这段时间内不再请求，直接报「查不到」：否则每次搜索都要白等重试，规划阶段十几次搜索会慢好几分钟
+THROTTLE_COOLDOWN = 90
+
+
+def _throttle_path():
+    return os.path.join(paths.CONFIG_DIR, "scholar_throttled")
+
+
+def _recently_throttled():
+    try:
+        return time.time() - os.path.getmtime(_throttle_path()) < THROTTLE_COOLDOWN
+    except OSError:
+        return False
+
+
+def _mark_throttled():
+    try:
+        os.makedirs(paths.CONFIG_DIR, exist_ok=True)
+        with open(_throttle_path(), "w") as fh:
+            fh.write(str(time.time()))
+    except OSError:
+        pass
 
 
 def _cache_path():
@@ -67,6 +89,8 @@ def lookup(arxiv_ids, sleep=time.sleep):
     missing = [b for b in bases if b not in out]
     if not missing:
         return out, None
+    if _recently_throttled() and not os.environ.get("SEMANTIC_SCHOLAR_API_KEY"):
+        return out, "Semantic Scholar 限流（免费额度大家共用），稍后再查"
     error = None
     data = None
     for wait in (0,) + RETRY_WAITS:
@@ -83,6 +107,8 @@ def lookup(arxiv_ids, sleep=time.sleep):
         except Exception as e:           # noqa: BLE001 —— 网络问题都算查不到
             error = arxiv.friendly_error(e)
             break
+    if data is None and error and "限流" in error:
+        _mark_throttled()
     if data is not None:
         for b, item in zip(missing, data):
             if not item:

@@ -38,6 +38,9 @@ def test_lookup_retries_on_429_then_reports(tmp_path, monkeypatch):
     out, err = scholar.lookup(["2309.00071"], sleep=waits.append)
     assert out == {} and "限流" in err
     assert n["i"] == 1 + len(scholar.RETRY_WAITS) and waits == list(scholar.RETRY_WAITS)
+    # 冷却期内不再请求，立刻返回
+    out, err = scholar.lookup(["2104.09864"], sleep=waits.append)
+    assert out == {} and "限流" in err and n["i"] == 1 + len(scholar.RETRY_WAITS)
 
 
 def test_describe():
