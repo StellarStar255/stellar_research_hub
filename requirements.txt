@@ -6,3 +6,7 @@ certifi>=2024.2.2  # 下载 arXiv 论文时的 HTTPS CA 证书
 # 也可以在设置里把实验解释器指向你自己的 conda 环境（装了 torch 等）
 numpy>=1.24.0
 matplotlib>=3.8.0
+
+# 本地网页版
+fastapi>=0.115.0
+uvicorn>=0.30.0

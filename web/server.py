@@ -1,12 +1,14 @@
 """本地网页：python -m web.server  ->  http://localhost:8767
 
-不需要 API Key：对话走本机已登录的 Claude Code（claude -p）。
+对话走本机已登录的 Claude Code 或 Codex CLI。
 """
 import html
 import json
 import os
 import re
 import tempfile
+import shutil
+from typing import Literal
 import urllib.parse
 
 import uvicorn
@@ -71,6 +73,17 @@ def static_file(name: str):
     if not name.endswith(".js") or "/" in name or not os.path.isfile(path):
         raise HTTPException(404)
     return FileResponse(path, media_type="text/javascript", headers={"Cache-Control": "no-store"})
+
+
+class AgentSelection(BaseModel):
+    provider: Literal["claude", "codex"] | None = None
+    model: str | None = None
+
+
+@app.get("/api/agent-config")
+def agent_config():
+    return {**agent.defaults(), "providers": [
+        {"id": p, "available": bool(shutil.which(p))} for p in agent.PROVIDERS]}
 
 
 # ---------------- 论文 ----------------
@@ -152,7 +165,7 @@ def files(pid: str, path: str):
 
 # ---------------- 研究主题 ----------------
 
-class TopicReq(BaseModel):
+class TopicReq(AgentSelection):
     title: str
 
 
@@ -165,8 +178,15 @@ def list_topics():
 def create_topic(req: TopicReq):
     if not req.title.strip():
         raise HTTPException(400, "主题不能为空")
+    try:
+        agent.selection(req.provider, req.model)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     t = topics.create(req.title)
-    cid = agent.send(t, None, f"请调研这个主题：{req.title.strip()}")
+    try:
+        cid = agent.send(t, None, f"请调研这个主题：{req.title.strip()}", provider=req.provider, model=req.model)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
     return {**_topic_json(t), "chat_id": cid}
 
 
@@ -264,7 +284,7 @@ def print_page(kind: str, oid: str):
 
 # ---------------- 对话 ----------------
 
-class ChatReq(BaseModel):
+class ChatReq(AgentSelection):
     message: str
     chat_id: str | None = None
     style: str = "tutor"
@@ -283,9 +303,11 @@ def send(kind: str, oid: str, req: ChatReq):
     if kind == "topics" and req.chat_id:
         obj.confirm_plan()     # 看过计划后用户的任何回复（确认或修改意见）都算确认，之后允许下载
     try:
-        return {"id": agent.send(obj, req.chat_id, req.message.strip(), req.style)}
-    except (FileNotFoundError, ValueError):
+        return {"id": agent.send(obj, req.chat_id, req.message.strip(), req.style, provider=req.provider, model=req.model)}
+    except FileNotFoundError:
         raise HTTPException(404, "对话不存在")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except RuntimeError as e:
         raise HTTPException(409, str(e))
 

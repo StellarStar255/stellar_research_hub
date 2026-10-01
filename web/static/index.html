@@ -193,6 +193,8 @@ details.code pre { background: var(--code); padding: 10px 12px; border-radius: 8
 .drop.show { display: flex; }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg);
          padding: 8px 16px; border-radius: 10px; font-size: 13px; z-index: 30; display: none; }
+.agent-settings { padding: 10px 14px; border-top: 1px solid var(--line); display: grid; gap: 6px; font-size: 12px; }
+.agent-settings input, .agent-settings select { width: 100%; box-sizing: border-box; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 6px; }
 </style>
 </head>
 <body>
@@ -205,7 +207,13 @@ details.code pre { background: var(--code); padding: 10px 12px; border-radius: 8
   <form class="add" id="addForm"><input id="addInput" placeholder="arXiv 编号或链接"><button>导入</button></form>
   <label class="upload">＋ 上传 PDF（或拖进窗口）<input type="file" id="file" accept="application/pdf" multiple hidden></label>
   <div class="papers" id="papers"></div>
-  <div class="side-hint">用本机登录的 Claude Code 回答，无需设置</div>
+  <div class="agent-settings">
+    <label for="agentProvider">AI 后端</label>
+    <select id="agentProvider"><option value="claude">Claude Code</option><option value="codex">Codex</option></select>
+    <label for="agentModel">模型（可自行填写）</label>
+    <input id="agentModel" placeholder="留空使用 CLI 默认模型" autocomplete="off">
+    <div id="agentHint">使用本机已登录的 CLI</div>
+  </div>
 </aside>
 <section id="pdfPane">
   <div class="pdfbar" id="pdfBar" hidden><span id="pdfTitle"></span><button id="studyBtn">精读这篇 →</button>
@@ -273,6 +281,33 @@ let ctx = null;          // {kind: 'papers'|'topics', id, title, ...}
 let current = null, lastJson = '', pollTimer = null, running = false, pollCount = 0;
 let pdfId = null;        // 中间正在显示的论文
 let style = localStorage.getItem('rh.style') || 'tutor';
+const agentModels = JSON.parse(localStorage.getItem('rh.agentModels') || '{}');
+let agentProvider = localStorage.getItem('rh.agentProvider') || null;
+let agentConfig = null;
+function agentChoice() { return {provider: $('#agentProvider').value, model: $('#agentModel').value.trim()}; }
+function showAgentChoice(provider, model) {
+  $('#agentProvider').value = provider;
+  $('#agentModel').value = model || '';
+  const available = agentConfig?.providers.find(p => p.id === provider)?.available;
+  $('#agentHint').textContent = available === false ? `未找到 ${provider} 命令，请先安装并登录` : '使用本机已登录的 CLI；选择在下一次发送时生效';
+}
+async function initAgent() {
+  agentConfig = await api('/api/agent-config');
+  agentProvider = agentProvider || agentConfig.provider;
+  if (!['claude', 'codex'].includes(agentProvider)) agentProvider = 'claude';
+  showAgentChoice(agentProvider, agentModels[agentProvider] ?? (agentProvider === agentConfig.provider ? agentConfig.model : ''));
+}
+$('#agentProvider').onchange = () => {
+  agentModels[agentProvider] = $('#agentModel').value.trim();
+  agentProvider = $('#agentProvider').value;
+  localStorage.setItem('rh.agentProvider', agentProvider);
+  localStorage.setItem('rh.agentModels', JSON.stringify(agentModels));
+  showAgentChoice(agentProvider, agentModels[agentProvider]);
+};
+$('#agentModel').onchange = () => {
+  agentModels[$('#agentProvider').value] = $('#agentModel').value.trim();
+  localStorage.setItem('rh.agentModels', JSON.stringify(agentModels));
+};
 const base = () => `/api/${ctx.kind}/${enc(ctx.id)}`;
 const isTopic = () => ctx && ctx.kind === 'topics';
 
@@ -406,7 +441,7 @@ $('#topicForm').onsubmit = async e => {
   e.preventDefault();
   const title = $('#topicInput').value.trim(); if (!title) return;
   try {
-    const t = await api('/api/topics', {method: 'POST', body: JSON.stringify({title})});
+    const t = await api('/api/topics', {method: 'POST', body: JSON.stringify({title, ...agentChoice()})});
     $('#topicInput').value = '';
     await loadSide();
     await openCtx('topics', t.id, t.chat_id);
@@ -525,7 +560,7 @@ function showHello() {
   $('#thread').innerHTML = `<div class="hello"><h1>开始研究</h1>
     <div class="sub">左上角给一个<b>研究主题</b>：我会自己去找论文、下载、读完，写一份综述，再陪你追问。<br>
     或者在下面导入<b>一篇论文</b>（arXiv 编号如 1706.03762，或把 PDF 拖进窗口），一问一答地精读、做实验。<br>
-    回答用你电脑上已登录的 Claude Code，不用任何设置。</div></div>`;
+    在左侧选择 Claude Code 或 Codex，并填写想用的模型名；留空使用 CLI 默认模型。</div></div>`;
   $('#quick').innerHTML = ''; $('#strip').hidden = true; updateComposer();
 }
 function newChat() {
@@ -562,6 +597,10 @@ async function openChat(id) {
   let chat;
   try { chat = await api(`${base()}/chats/${id}`); } catch { return newChat(); }
   if (current !== id || !ctx || ctx.kind + ctx.id !== key) return;
+  if (switching) {
+    agentProvider = chat.provider || 'claude';
+    showAgentChoice(agentProvider, chat.model || '');
+  }
   const wasRunning = running;
   running = chat.running;
   const json = JSON.stringify(chat.messages) + running;
@@ -607,7 +646,7 @@ function renderThread(chat, jump) {
     const err = m.status === 'error' ? `<div class="error">出错了：${esc(m.error || '')}</div>`
       : m.status === 'stopped' ? '<div class="meta-line">已停止</div>' : '';
     const meta = m.status === 'done' && m.elapsed ? `<div class="meta-line">用时 ${m.elapsed < 60 ? m.elapsed + ' 秒' : Math.round(m.elapsed / 60) + ' 分钟'}</div>` : '';
-    return `<div class="msg"><div class="avatar">C</div><div class="body">${parts}${draft}${busy}${err}${meta}</div></div>`;
+    return `<div class="msg"><div class="avatar" title="${esc(m.provider || chat.provider || 'claude')}">${(m.provider || chat.provider) === 'codex' ? 'O' : 'C'}</div><div class="body">${parts}${draft}${busy}${err}${meta}</div></div>`;
   }).join('');
   const root = $('#thread');
   root.querySelectorAll('.md').forEach(decorate);
@@ -637,6 +676,8 @@ async function runFile(file) {
 }
 
 function updateComposer() {
+  $('#agentProvider').disabled = running;
+  $('#agentModel').disabled = running;
   const btn = $('#send');
   btn.textContent = running ? '停止' : '发送';
   btn.classList.toggle('stop', running);
@@ -649,7 +690,7 @@ async function send(text) {
   if (!text || running || !ctx) return;
   $('#input').value = ''; autosize();
   try {
-    const {id} = await api(`${base()}/chats`, {method: 'POST', body: JSON.stringify({message: text, chat_id: current, style})});
+    const {id} = await api(`${base()}/chats`, {method: 'POST', body: JSON.stringify({message: text, chat_id: current, style, ...agentChoice()})});
     current = null;
     await openChat(id);
   } catch (e) { toast(e.message, 5000); $('#input').value = text; updateComposer(); }
@@ -746,7 +787,7 @@ $('#togglePdf').onclick = () => $('#pdfPane').classList.toggle('hidden');
   };
 })();
 
-loadSide().then(openDefault);
+initAgent().then(() => loadSide()).then(openDefault).catch(e => toast(e.message, 5000));
 </script>
 </body>
 </html>

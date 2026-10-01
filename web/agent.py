@@ -1,4 +1,4 @@
-"""网页版的对话 agent：每轮提问跑一次 `claude -p`（用本机已登录的 Claude Code，不用 API Key），
+"""网页版的对话 agent：每轮运行 Claude Code 或 Codex CLI，复用本机登录。
 工作目录是论文目录，能读 paper.pdf、在 experiments/ 里写实验代码、改 notes.md、联网查资料。
 Claude 自己不能执行命令：实验代码由用户在网页上点「运行」执行（run_experiment），
 输出和图再自动发回给 Claude 解读。
@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import signal
+import sys
 import subprocess
 import threading
 import time
@@ -24,6 +25,8 @@ PROMPT_TEMPLATE = (Path(__file__).parent / "agent_prompt.md").read_text(encoding
 TOPIC_PROMPT = (Path(__file__).parent / "topic_prompt.md").read_text(encoding="utf-8")
 RH = str(Path(__file__).resolve().parent.parent / "rh")
 CLAUDE = shutil.which("claude") or "/opt/homebrew/bin/claude"
+CODEX = shutil.which("codex") or "/opt/homebrew/bin/codex"
+PROVIDERS = ("claude", "codex")
 MODEL = os.environ.get("RESEARCH_AGENT_MODEL")   # 例如 sonnet，回答更快
 PYTHON = os.environ.get("RESEARCH_PYTHON") or shutil.which("python3") or "python3"
 
@@ -128,7 +131,79 @@ def _topic_prompt(topic):
             .replace("{TOPIC_PAPERS}", have).replace("{RH}", RH))
 
 
-def send(paper, cid, text, style="tutor", auto=False):
+def defaults():
+    provider = os.environ.get("RESEARCH_AGENT_PROVIDER", "claude").strip()
+    if provider not in PROVIDERS:
+        provider = "claude"
+    return {"provider": provider, "model": MODEL or ""}
+
+
+def selection(provider=None, model=None, chat=None):
+    current = chat or defaults()
+    provider = provider if provider is not None else current.get("provider", "claude")
+    model = model if model is not None else current.get("model", MODEL or "")
+    if provider not in PROVIDERS:
+        raise ValueError("后端只能是 claude 或 codex")
+    model = model.strip()
+    if len(model) > 200 or any(c.isspace() for c in model) or model.startswith("-"):
+        raise ValueError("模型名不能含空白、以 - 开头或超过 200 字符")
+    return provider, model
+
+
+def _history(chat):
+    lines = []
+    for m in chat["messages"]:
+        if m["role"] == "user":
+            lines.append("用户：" + m["text"])
+        elif m["role"] == "assistant":
+            lines.append("助手：" + "\n".join(p["text"] for p in m.get("parts", []) if p["type"] == "text"))
+        elif m["role"] == "run":
+            lines.append("实验结果：" + m.get("output", ""))
+    return "\n\n".join(lines)
+
+
+def _command(paper, chat, text, provider, model):
+    # 切换后端后重建上下文，避免恢复一个缺少其他后端消息的会话。
+    continuing = chat.get("provider", "claude") == provider
+    session = chat.get(provider + "_session") if continuing else None
+    prompt = text if session else "之前的对话（供参考）：\n" + _history(chat)
+    system = build_prompt(paper, chat["style"])
+    if provider == "codex":
+        bridge = str(Path(__file__).with_name("codex_tools.py").resolve())
+        config = {"command": sys.executable, "args": [bridge, str(paper.root), paper.kind, paper.id],
+                  "required": True}
+        cmd = [CODEX, "exec", "--ignore-user-config", "--sandbox", "read-only", "-c", 'approval_policy="never"',
+               "-c", "features.shell_tool=false", "-c", "features.unified_exec=false",
+               "-c", "mcp_servers=" + _toml_servers(config), "-c", 'web_search="live"']
+        if session:
+            cmd += ["resume", session]
+        cmd += ["--json", "--skip-git-repo-check"]
+        if model:
+            cmd += ["--model", model]
+        system += ("\n\n使用 research MCP 工具 Read/Write/Search/Cite/Import。"
+                   "Read 支持 PDF 页码及图片；Write 写完整文件，笔记可 append。"
+                   "主题调研中的 rh search/cite/import 命令改用 Search/Cite/Import 工具。"
+                   "不能执行 shell 或实验代码。")
+        cmd += ["--", system + "\n\n" + prompt]
+        return cmd
+    tools, allowed = (TOPIC_TOOLS, TOPIC_ALLOWED) if paper.kind == "topic" else (TOOLS, ALLOWED)
+    cmd = [CLAUDE, "-p", prompt, "--output-format", "stream-json", "--verbose",
+           "--include-partial-messages", "--system-prompt", system,
+           "--tools", tools, "--allowedTools", *allowed, "--strict-mcp-config"]
+    if model:
+        cmd += ["--model", model]
+    if session:
+        cmd += ["--resume", session]
+    return cmd
+
+
+def _toml_servers(config):
+    # JSON quoted strings are also valid TOML basic strings.
+    return "{research={" + ",".join(k + "=" + ("true" if v is True else json.dumps(v))
+                                       for k, v in config.items()) + "}}"
+
+
+def send(paper, cid, text, style="tutor", auto=False, provider=None, model=None):
     """开始一轮。返回对话 id（cid 为 None 时新建对话）。auto=True：程序代发的消息（实验结果），界面不显示成用户气泡。"""
     with _lock:
         if cid:
@@ -140,29 +215,30 @@ def send(paper, cid, text, style="tutor", auto=False):
             chat = {"id": cid, "title": text.strip().splitlines()[0][:30], "claude_session": None,
                     "style": style if style in STYLES else "tutor",
                     "created": time.strftime("%Y-%m-%d %H:%M"), "messages": []}
+        provider, model = selection(provider, model, chat if cid and chat.get("messages") else None)
+        if paper.kind != "topic":
+            os.makedirs(os.path.join(paper.root, "experiments", "figs"), exist_ok=True)
+        # 创建进程成功后再保存这一轮；缺少 CLI 不留下永久「回答中」。
+        previous = dict(chat)
         chat["messages"].append({"role": "user", "text": text, **({"auto": True} if auto else {})})
         chat["messages"].append({"role": "assistant", "parts": [], "draft": "", "status": "running",
                                  "started": time.time()})
         chat["updated"] = time.strftime("%Y-%m-%d %H:%M")
-        _save(paper, chat)
-
-        if paper.kind == "topic":
-            tools, allowed = TOPIC_TOOLS, TOPIC_ALLOWED
-        else:
-            tools, allowed = TOOLS, ALLOWED
-            os.makedirs(os.path.join(paper.root, "experiments", "figs"), exist_ok=True)
-        cmd = [CLAUDE, "-p", text, "--output-format", "stream-json", "--verbose",
-               "--include-partial-messages", "--system-prompt", build_prompt(paper, chat["style"]),
-               "--tools", tools, "--allowedTools", *allowed, "--strict-mcp-config"]
-        if MODEL:
-            cmd += ["--model", MODEL]
-        if chat.get("claude_session"):
-            cmd += ["--resume", chat["claude_session"]]
+        cmd = _command(paper, {**chat, "provider": previous.get("provider", "claude")}, text, provider, model)
         env = dict(os.environ)
         env.pop("CLAUDECODE", None)
-        proc = subprocess.Popen(cmd, cwd=paper.root, env=env, stdin=subprocess.DEVNULL,
+        try:
+            proc = subprocess.Popen(cmd, cwd=paper.root, env=env, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, bufsize=1, start_new_session=True)
+        except FileNotFoundError as e:
+            raise RuntimeError(f"找不到 {provider} 命令，请先安装并登录对应 CLI") from e
+        if previous.get("provider", "claude") != provider:
+            chat.pop("claude_session", None)
+            chat.pop("codex_session", None)
+        chat.update(provider=provider, model=model)
+        chat["messages"][-1].update(provider=provider, model=model)
+        _save(paper, chat)
         _procs[cid] = proc
     threading.Thread(target=_pump, args=(paper, cid, proc), daemon=True).start()
     return cid
@@ -252,7 +328,58 @@ def _result_text(block):
     return str(c or "")
 
 
+def _handle_codex(chat, msg, ev, root):
+    t = ev.get("type")
+    if t == "thread.started":
+        chat["codex_session"] = ev.get("thread_id")
+    elif t in ("error", "turn.failed"):
+        msg.update(status="error", error=(ev.get("error") or {}).get("message") or ev.get("message") or "Codex 回答失败")
+    elif t == "turn.completed":
+        if msg["status"] == "running":
+            msg["status"] = "done"
+        msg["usage"] = ev.get("usage", {})
+    elif t in ("item.started", "item.updated", "item.completed"):
+        item = ev.get("item") or {}
+        if item.get("type") == "agent_message":
+            if t == "item.completed":
+                msg["parts"].append({"type": "text", "text": item.get("text", "")})
+                msg["draft"] = ""
+            else:
+                msg["draft"] = item.get("text", "")
+        elif item.get("type") in ("mcp_tool_call", "web_search", "command_execution", "file_change"):
+            step = next((p for p in msg["parts"] if p.get("tool_id") == item.get("id")), None)
+            if step is None:
+                step = {"type": "step", "tool_id": item.get("id"), "kind": "tool", "detail": ""}
+                msg["parts"].append(step)
+            name = item.get("tool", item.get("type", ""))
+            args = item.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {}
+            mapped = _tool_step({"name": name, "input": args, "id": item.get("id")}, root)
+            step.update(mapped)
+            if name in ("Search", "Cite", "Import"):
+                step.update(kind="import" if name == "Import" else "search", label=name,
+                            detail=args.get("query", args.get("ref", "")))
+            if item.get("type") == "web_search":
+                step.update(kind="search", label="搜索网页", detail=item.get("query", ""))
+            result = item.get("result") or {}
+            output = _result_text(result) if isinstance(result, dict) else str(result)
+            step["status"] = "error" if item.get("error") or item.get("status") == "failed" or (isinstance(result, dict) and result.get("isError")) else ("done" if t == "item.completed" else "running")
+            if output:
+                step["output"] = output[:4000]
+                m = PAPER_RE.search(output)
+                if m and name == "Import":
+                    step.update(paper_id=m.group(1), detail=_paper_title(m.group(1)))
+            if item.get("error"):
+                step["output"] = str(item["error"])
+
+
 def _handle(chat, msg, ev, root):
+    if msg.get("provider") == "codex":
+        return _handle_codex(chat, msg, ev, root)
     t = ev.get("type")
     if t == "system" and ev.get("subtype") == "init":
         chat["claude_session"] = ev.get("session_id")
@@ -312,6 +439,8 @@ def _pump(paper, cid, proc):
         except json.JSONDecodeError:
             noise = (noise + [line.rstrip()])[-20:]
             continue
+        if not isinstance(ev, dict):
+            continue
         if ev.get("type") == "stream_event":
             d = ((ev.get("event") or {}).get("delta") or {}).get("text")
             if not d:
@@ -334,7 +463,7 @@ def _pump(paper, cid, proc):
         for p in msg["parts"]:
             if p.get("status") == "running":
                 p["status"] = "error"
-        if msg["status"] == "running":
+        if msg["status"] == "running" or (proc.returncode and msg["status"] == "done"):
             msg["status"] = "stopped" if proc.returncode in (-15, 143) else "error"
             msg["error"] = (err or "").strip()[-500:] or f"exit {proc.returncode}"
         msg["elapsed"] = round(time.time() - msg.get("started", time.time()))

@@ -1,4 +1,4 @@
-# Research Hub —— 和 Claude 一起读论文、做实验
+# Research Hub —— 和 Claude / Codex 一起读论文、做实验
 
 **中文** | [English](#english)
 
@@ -15,7 +15,12 @@
 ./start.sh        # 自动打开 http://localhost:8767
 ```
 
-回答用你电脑上已登录的 Claude Code（`claude` 命令），**不需要 API Key、不需要任何设置**。
+网页版支持电脑上已登录的 **Claude Code（`claude`）或 Codex CLI（`codex`）**，使用 CLI 登录时不用在应用里填 API Key。
+在左侧「AI 后端」选择 Claude Code / Codex，「模型」可填写任意你有权限使用的模型名；留空使用 CLI 默认模型。
+选择会在浏览器中保存；打开历史对话会恢复该对话的后端和模型，下一轮也可修改。
+首次使用 Codex 时先运行 `codex login`。Codex 集成使用 `codex exec --json`，需要支持 `--ignore-user-config` 的新版 CLI。
+为保持应用工具权限，Codex 不加载用户 `config.toml` 中的 MCP、hooks 和其他设置；需要指定模型时在网页中填写。
+模型是否可用由对应 CLI 和账号决定，应用不限制为固定列表。
 左上角输入 arXiv 编号（如 1706.03762）或把 PDF 拖进窗口，就可以开始问。
 
 - 左边论文库，中间 PDF，右边对话；回答里的 `p.3` 可点，PDF 跳到那一页；公式用 LaTeX 渲染
@@ -30,11 +35,11 @@
   鼠标移到条目上：✎ 重命名（顶栏标题双击也行）、🗄 归档（收进列表底部「已归档」）、× 删除
 - **导出**：「📋 报告 / 📝 笔记」抽屉里 ⬇ Markdown 下载 .md（论文链接换成 arXiv 网址）；🖨 PDF 打开打印版，选「存储为 PDF」
 - 让它做实验：它把代码写进 `experiments/`，回答里出现「▶ 运行」按钮，你点了才执行；
-  输出和图自动发回给它解读。Claude 自己没有执行命令的权限，写文件也只限 `experiments/` 和 `notes.md`
-- 环境变量：`RESEARCH_AGENT_MODEL=sonnet` 回答更快；`RESEARCH_PYTHON=/path/to/python` 指定跑实验的解释器
+  输出和图自动发回给它解读。单篇精读不允许 AI 自行执行实验，写文件只限 `experiments/` 和 `notes.md`。Codex 使用只读沙箱、关闭 shell，通过受限 MCP 工具读取 PDF（文字及页面图）、写文件；主题仅能写 `report.md`，下载仍需先确认计划
+- 环境变量：`RESEARCH_AGENT_PROVIDER=codex` 设置默认后端（默认 `claude`）；`RESEARCH_AGENT_MODEL=模型名` 设置默认模型；`RESEARCH_PYTHON=/path/to/python` 指定跑实验的解释器
 - 代码在 `web/`（server.py、agent.py、agent_prompt.md、static/index.html），和桌面版共用 `core/` 与论文库
 
-## 桌面版（PyQt6，需要 API Key）
+## 桌面版（PyQt6，仍使用 Anthropic API，需要 API Key）
 
 ```bash
 pip install -r requirements.txt
@@ -99,7 +104,7 @@ python3 stellar_research_hub.py paper.pdf  # 启动时直接导入一篇
 - `⌘/Ctrl+N` 新对话；`⌘/Ctrl+L` 聚焦输入框
 - `⌘/Ctrl+O` 导入 PDF；`⌘/Ctrl+Shift+O` 从 arXiv 导入
 
-## 模型
+## 桌面版模型
 
 默认 `claude-opus-5`（自适应思考，思考深度可在设置里调）。
 Opus 5 / Fable 5.1 开启了服务端 fallback：主模型偶尔误拒时自动换备用模型继续。
